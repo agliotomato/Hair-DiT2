@@ -1,0 +1,23 @@
+model:
+  model_id: stabilityai/stable-diffusion-3.5-medium
+  num_controlnet_layers_hair: 24  # SD3.5 전체 24블록
+  num_controlnet_layers_face: 6   # SD3.5 마지막 6블록 (18~23)
+
+training:
+  mixed_precision: bf16
+  gradient_accumulation_steps: 1
+  gradient_checkpointing: true
+  gradient_clip: 1.0
+  ema_decay: 0.9999
+  weighting_scheme: logit_normal
+  logit_mean: 0.0
+  logit_std: 1.0
+
+  loss_weights:
+    flow: 1.0
+    lpips: 0.1
+    edge: 0.0
+
+checkpointing:
+  eval_every: 10
+  save_every: 20

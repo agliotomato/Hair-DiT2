@@ -1,0 +1,22 @@
+base: configs/base.yaml
+
+training:
+  phase: finetune
+  dataset: braid
+  resume_from: checkpoints/phase1_unbraid/epoch_40.pth
+
+  epochs: 50
+  batch_size: 4
+  learning_rate: 2.0e-5
+  warmup_steps: 100
+
+  loss_weights:
+    flow: 1.0
+    lpips: 0.1
+    lpips_warmup_frac: 0.0
+    edge: 0.05
+
+checkpointing:
+  output_dir: checkpoints/phase2_braid/
+  eval_every: 5
+  save_every: 10

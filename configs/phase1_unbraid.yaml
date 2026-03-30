@@ -1,0 +1,20 @@
+base: configs/base.yaml
+
+training:
+  phase: pretrain
+  dataset: unbraid
+  epochs: 50
+  batch_size: 4             # adjusted for Dual ControlNet multi-GPU context
+  learning_rate: 1.0e-4
+  warmup_steps: 500
+
+  loss_weights:
+    flow: 1.0
+    lpips: 0.1
+    lpips_warmup_frac: 0.3
+    edge: 0.0
+
+checkpointing:
+  output_dir: checkpoints/phase1_unbraid/
+  eval_every: 10
+  save_every: 20

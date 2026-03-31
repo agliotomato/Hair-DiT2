@@ -2,7 +2,7 @@
 Trainer for SD3.5 Dual ControlNet hair region generation (hair-inpaint).
 
 Holds:
-  - HairControlNet (trainable, blocks 0~23)
+  - HairControlNet (trainable, blocks 0~11)
   - FaceControlNet (trainable, blocks 18~23)
   - SD3Transformer2DModel (frozen)
   - VAEWrapper SD3.5 (frozen)
@@ -46,7 +46,7 @@ class Trainer:
 
         self.accelerator = Accelerator(
             mixed_precision=config["training"].get("mixed_precision", "bf16"),
-            gradient_accumulation_steps=config["training"].get("gradient_accumulation_steps", 2),
+            gradient_accumulation_steps=config["training"].get("gradient_accumulation_steps", 1),
             log_with="tensorboard",
             project_dir=config["checkpointing"]["output_dir"],
         )
@@ -99,18 +99,18 @@ class Trainer:
             p.requires_grad_(False)
         self.transformer.eval()
 
-        # HairControlNet (outputs 24 residuals)
+        # HairControlNet (12 blocks → 12 residuals)
         self.hair_controlnet = HairControlNet(
             model_id=model_id,
             vae=self.vae,
-            num_layers=cfg["model"].get("num_controlnet_layers_hair", 24),
+            num_layers=cfg["model"].get("num_hair_controlnet_layers", 12),
             local_files_only=local_files_only,
         )
 
-        # FaceControlNet (outputs 6 residuals for blocks 18~23)
+        # FaceControlNet (6 blocks from SD3.5 blocks 18~23 → 6 residuals)
         self.face_controlnet = FaceControlNet(
             model_id=model_id,
-            num_layers=cfg["model"].get("num_controlnet_layers_face", 6),
+            num_layers=cfg["model"].get("num_face_controlnet_layers", 6),
             local_files_only=local_files_only,
         )
 
@@ -227,6 +227,7 @@ class Trainer:
             if (epoch + 1) % save_every == 0:
                 self._save_checkpoint(f"epoch_{epoch+1}.pth")
 
+        self._save_checkpoint("final.pth")
         self.accelerator.end_training()
 
     def _train_step(self, batch: dict, grad_clip: float = 1.0) -> tuple[torch.Tensor, dict]:
@@ -245,15 +246,15 @@ class Trainer:
             sigmas = self._sample_sigmas(B, device)
             noise = torch.randn_like(latents)
 
-            # Flow matching partial noise: only hair region receives noise
+            # Partial noise: face region keeps GT latent, hair region gets σ*noise
+            # pipeline.md: noisy = gt_latent*(1-matte) + σ*noise*matte
             matte_latent = resize_matte_to_latent(matte)  # (B, 1, 64, 64)
-            pure_noisy = (1.0 - sigmas) * latents + sigmas * noise
-            noisy_latents = latents * (1.0 - matte_latent) + pure_noisy * matte_latent
+            noisy_latents = latents * (1.0 - matte_latent) + sigmas * noise * matte_latent
 
             noisy_latents = noisy_latents.to(dtype=torch.bfloat16)
             sigmas_1d = sigmas.view(B).to(dtype=torch.bfloat16)
 
-            # HairControlNet (outputs 24)
+            # HairControlNet (12 blocks → 12 residuals)
             hair_res_list, null_enc_hs, null_pooled = self.hair_controlnet(
                 noisy_latent=noisy_latents, sketch=sketch, matte=matte, sigmas=sigmas_1d
             )
@@ -267,18 +268,25 @@ class Trainer:
             # Cast to bf16
             hair_res_list = [r.to(dtype=torch.bfloat16) for r in hair_res_list]
             face_res_list = [r.to(dtype=torch.bfloat16) for r in face_res_list]
-            matte_tokens = F.interpolate(matte.to(device, dtype=torch.bfloat16), size=(64, 64)).flatten(2).permute(0, 2, 1)
+            null_enc_hs = null_enc_hs.to(dtype=torch.bfloat16)
+            null_pooled = null_pooled.to(dtype=torch.bfloat16)
 
-            # Mix residuals
+            # matte_tokens: SD3.5 patch_size=2 → 32×32 tokens → seq_len=1024
+            # (B,1,32,32) → flatten → (B,1024,1) for broadcasting over (B,1024,inner_dim)
+            matte_tokens = F.interpolate(
+                matte.to(device, dtype=torch.bfloat16), size=(32, 32), mode="bilinear", align_corners=False
+            ).flatten(2).permute(0, 2, 1)  # (B, 1024, 1)
+
+            # Mix 24 residuals: HairControlNet has 12 residuals → 2 blocks each (i//2)
+            # blocks  0~17: hair_res[i//2]
+            # blocks 18~23: hair_res[i//2]*matte + face_res[i-18]*(1-matte)
             mixed_residuals = []
-            for i in range(24):
-                h_res = hair_res_list[i]
-                if i < 18:
-                    mixed_residuals.append(h_res)
-                else:
-                    f_res = face_res_list[i - 18]
-                    m_res = h_res * matte_tokens + f_res * (1.0 - matte_tokens)
-                    mixed_residuals.append(m_res.to(dtype=torch.bfloat16))
+            for i in range(18):
+                mixed_residuals.append(hair_res_list[i // 2])
+            for i in range(18, 24):
+                r_h = hair_res_list[i // 2]       # indices 9,9,10,10,11,11
+                r_f = face_res_list[i - 18]        # indices 0,1,2,3,4,5
+                mixed_residuals.append(r_h * matte_tokens + r_f * (1.0 - matte_tokens))
 
             # Transformer v_pred
             v_pred = self.transformer(
@@ -319,8 +327,7 @@ class Trainer:
             noise = torch.randn_like(latents)
 
             matte_latent = resize_matte_to_latent(matte)
-            pure_noisy = (1.0 - sigmas) * latents + sigmas * noise
-            noisy_latents = latents * (1.0 - matte_latent) + pure_noisy * matte_latent
+            noisy_latents = latents * (1.0 - matte_latent) + sigmas * noise * matte_latent
 
             noisy_latents = noisy_latents.to(dtype=torch.bfloat16)
             sigmas_1d = sigmas.view(B).to(dtype=torch.bfloat16)
@@ -334,15 +341,17 @@ class Trainer:
 
             hair_res_list = [r.to(dtype=torch.bfloat16) for r in hair_res_list]
             face_res_list = [r.to(dtype=torch.bfloat16) for r in face_res_list]
-            matte_tokens = F.interpolate(matte.to(dtype=torch.bfloat16), size=(64, 64)).flatten(2).permute(0, 2, 1)
+            matte_tokens = F.interpolate(
+                matte.to(dtype=torch.bfloat16), size=(32, 32), mode="bilinear", align_corners=False
+            ).flatten(2).permute(0, 2, 1)  # (B, 1024, 1)
 
             mixed_residuals = []
-            for i in range(24):
-                if i < 18:
-                    mixed_residuals.append(hair_res_list[i])
-                else:
-                    m_res = hair_res_list[i] * matte_tokens + face_res_list[i - 18] * (1.0 - matte_tokens)
-                    mixed_residuals.append(m_res.to(dtype=torch.bfloat16))
+            for i in range(18):
+                mixed_residuals.append(hair_res_list[i // 2])
+            for i in range(18, 24):
+                r_h = hair_res_list[i // 2]
+                r_f = face_res_list[i - 18]
+                mixed_residuals.append(r_h * matte_tokens + r_f * (1.0 - matte_tokens))
 
             v_pred = self.transformer(
                 hidden_states=noisy_latents, encoder_hidden_states=null_enc_hs, pooled_projections=null_pooled,
@@ -354,6 +363,8 @@ class Trainer:
             total_loss += log_dict["loss_total"]
             n_batches += 1
 
+        self.hair_controlnet.train()
+        self.face_controlnet.train()
         return total_loss / max(n_batches, 1)
 
     def _save_checkpoint(self, filename: str):

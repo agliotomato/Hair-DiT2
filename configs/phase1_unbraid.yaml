@@ -4,7 +4,7 @@ training:
   phase: pretrain
   dataset: unbraid
   epochs: 50
-  batch_size: 4             # adjusted for Dual ControlNet multi-GPU context
+  batch_size: 8             # H100 80GB 기준
   learning_rate: 1.0e-4
   warmup_steps: 500
 

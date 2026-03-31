@@ -1,7 +1,7 @@
 model:
   model_id: stabilityai/stable-diffusion-3.5-medium
-  num_controlnet_layers_hair: 24  # SD3.5 전체 24블록
-  num_controlnet_layers_face: 6   # SD3.5 마지막 6블록 (18~23)
+  num_hair_controlnet_layers: 12   # SD3.5 blocks 0~11 복사
+  num_face_controlnet_layers: 6    # SD3.5 blocks 18~23 복사
 
 training:
   mixed_precision: bf16

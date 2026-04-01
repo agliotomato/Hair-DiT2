@@ -4,7 +4,7 @@ training:
   phase: pretrain
   dataset: unbraid
   epochs: 50
-  batch_size: 8             # H100 80GB 기준
+  batch_size: 2             # A100 40GB 기준
   learning_rate: 1.0e-4
   warmup_steps: 500
 

@@ -80,7 +80,10 @@ class Trainer:
         self.logit_mean = config["training"].get("logit_mean", 0.0)
         self.logit_std  = config["training"].get("logit_std",  1.0)
         self.global_step = 0
+        self.start_epoch = 0
         self.best_val_loss = float("inf")
+
+        self._load_checkpoint()
 
     def _setup_models(self):
         cfg = self.cfg
@@ -124,13 +127,6 @@ class Trainer:
             model_id, subfolder="scheduler", local_files_only=local_files_only
         )
 
-        resume_from = cfg["training"].get("resume_from")
-        if resume_from and Path(resume_from).exists():
-            ckpt = torch.load(resume_from, map_location="cpu")
-            self.hair_controlnet.load_state_dict(ckpt["hair_controlnet"])
-            if "face_controlnet" in ckpt:
-                self.face_controlnet.load_state_dict(ckpt["face_controlnet"])
-            self.accelerator.print(f"Loaded checkpoint from {resume_from}")
 
     def _setup_data(self):
         cfg = self.cfg["training"]
@@ -185,6 +181,32 @@ class Trainer:
         indices = (u * n_train).long().clamp(0, n_train - 1)
         return self.scheduler.sigmas[indices.cpu()].to(device=device).view(bsz, 1, 1, 1)
 
+    def _load_checkpoint(self):
+        resume_from = self.cfg["training"].get("resume_from")
+        if not resume_from:
+            return
+        path = Path(resume_from)
+        if not path.exists():
+            self.accelerator.print(f"[Resume] Checkpoint not found: {path}, starting from scratch")
+            return
+        ckpt = torch.load(path, map_location="cpu")
+        self.accelerator.unwrap_model(self.hair_controlnet).load_state_dict(ckpt["hair_controlnet"])
+        self.accelerator.unwrap_model(self.face_controlnet).load_state_dict(ckpt["face_controlnet"])
+        if "ema_hair" in ckpt:
+            self.ema_hair.load_state_dict(ckpt["ema_hair"])
+        if "ema_face" in ckpt:
+            self.ema_face.load_state_dict(ckpt["ema_face"])
+        if "optimizer" in ckpt:
+            self.optimizer.load_state_dict(ckpt["optimizer"])
+        if "lr_scheduler" in ckpt:
+            self.lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
+        self.global_step = ckpt.get("global_step", 0)
+        self.start_epoch = ckpt.get("epoch", 0)
+        self.best_val_loss = ckpt.get("best_val_loss", float("inf"))
+        self.accelerator.print(
+            f"[Resume] Loaded {path} — epoch {self.start_epoch}, step {self.global_step}, best_val {self.best_val_loss:.4f}"
+        )
+
     def train(self):
         cfg = self.cfg["training"]
         epochs = cfg.get("epochs", 200)
@@ -194,7 +216,7 @@ class Trainer:
 
         self.accelerator.print(f"Starting {self.phase} training for {epochs} epochs")
 
-        for epoch in range(epochs):
+        for epoch in range(self.start_epoch, epochs):
             self.hair_controlnet.train()
             self.face_controlnet.train()
             epoch_losses = []
@@ -223,11 +245,11 @@ class Trainer:
                 self.accelerator.print(f"Val loss: {val_loss:.4f}")
                 if val_loss < self.best_val_loss:
                     self.best_val_loss = val_loss
-                    self._save_checkpoint("best.pth")
+                    self._save_checkpoint("best.pth", epoch=epoch + 1)
             if (epoch + 1) % save_every == 0:
-                self._save_checkpoint(f"epoch_{epoch+1}.pth")
+                self._save_checkpoint(f"epoch_{epoch+1}.pth", epoch=epoch + 1)
 
-        self._save_checkpoint("final.pth")
+        self._save_checkpoint("final.pth", epoch=epochs)
         self.accelerator.end_training()
 
     def _train_step(self, batch: dict, grad_clip: float = 1.0) -> tuple[torch.Tensor, dict]:
@@ -354,7 +376,8 @@ class Trainer:
                 mixed_residuals.append(r_h * matte_tokens + r_f * (1.0 - matte_tokens))
 
             v_pred = self.transformer(
-                hidden_states=noisy_latents, encoder_hidden_states=null_enc_hs, pooled_projections=null_pooled,
+                hidden_states=noisy_latents, encoder_hidden_states=null_enc_hs.to(dtype=torch.bfloat16),
+                pooled_projections=null_pooled.to(dtype=torch.bfloat16),
                 timestep=sigmas_1d, block_controlnet_hidden_states=mixed_residuals, return_dict=False
             )[0]
             v_target = (noise - latents).to(dtype=torch.bfloat16)
@@ -367,7 +390,7 @@ class Trainer:
         self.face_controlnet.train()
         return total_loss / max(n_batches, 1)
 
-    def _save_checkpoint(self, filename: str):
+    def _save_checkpoint(self, filename: str, epoch: int = 0):
         if not self.accelerator.is_main_process:
             return
         ckpt = {
@@ -376,7 +399,10 @@ class Trainer:
             "ema_hair": self.ema_hair.state_dict(),
             "ema_face": self.ema_face.state_dict(),
             "optimizer": self.optimizer.state_dict(),
+            "lr_scheduler": self.lr_scheduler.state_dict(),
             "global_step": self.global_step,
+            "epoch": epoch,
+            "best_val_loss": self.best_val_loss,
             "config": self.cfg,
         }
         save_path = self.output_dir / filename

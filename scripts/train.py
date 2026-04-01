@@ -54,9 +54,12 @@ def deep_merge(base: dict, override: dict) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="Path to YAML config file")
+    parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    if args.resume:
+        cfg["training"]["resume_from"] = args.resume
     print(f"Config loaded: phase={cfg['training']['phase']}, dataset={cfg['training']['dataset']}")
 
     trainer = Trainer(cfg)

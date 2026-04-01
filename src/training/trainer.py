@@ -21,7 +21,7 @@ import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
 from diffusers import FlowMatchEulerDiscreteScheduler, SD3Transformer2DModel
-from torch.optim import AdamW
+import bitsandbytes as bnb
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -152,7 +152,7 @@ class Trainer:
         lr = cfg.get("learning_rate", 1e-4)
 
         params = list(self.hair_controlnet.parameters()) + list(self.face_controlnet.parameters())
-        self.optimizer = AdamW(params, lr=lr, betas=(0.9, 0.999), weight_decay=1e-2)
+        self.optimizer = bnb.optim.AdamW8bit(params, lr=lr, betas=(0.9, 0.999), weight_decay=1e-2)
 
         epochs = cfg.get("epochs", 200)
         total_steps = epochs * len(self.train_loader)

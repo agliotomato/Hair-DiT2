@@ -80,18 +80,20 @@ class FaceControlNet(nn.Module):
             copy.deepcopy(blk) for blk in source_blocks
         ])
 
-        # SD3.5 block 23 has context_pre_only=True which breaks the 2-tuple return
-        # in SD3ControlNetModel.forward. Setting it to False requires replacing
-        # norm1_context (AdaLayerNormContinuous) with AdaLayerNormZero to match
-        # the expected forward call signature.
+        # SD3.5 block 23 has context_pre_only=True:
+        #   norm1_context → AdaLayerNormContinuous  (needs AdaLayerNormZero)
+        #   norm2_context → None                    (needs LayerNorm)
+        #   ff_context    → None                    (needs FeedForward)
+        # Fix by reinitializing missing layers from a reference block (block 0).
+        ref_blk = self.controlnet.transformer_blocks[0]
         for blk in self.controlnet.transformer_blocks:
             if blk.context_pre_only:
-                # inner_dim: norm1 is AdaLayerNormZero, linear maps time_emb → 6*inner_dim
                 inner_dim = blk.norm1.linear.weight.shape[0] // 6
-                blk.norm1_context = AdaLayerNormZero(inner_dim, bias=True).to(
-                    dtype=blk.norm1.linear.weight.dtype,
-                    device=blk.norm1.linear.weight.device,
-                )
+                dtype = blk.norm1.linear.weight.dtype
+                device = blk.norm1.linear.weight.device
+                blk.norm1_context = AdaLayerNormZero(inner_dim, bias=True).to(dtype=dtype, device=device)
+                blk.norm2_context = copy.deepcopy(ref_blk.norm2_context).to(dtype=dtype, device=device)
+                blk.ff_context = copy.deepcopy(ref_blk.ff_context).to(dtype=dtype, device=device)
                 blk.context_pre_only = False
 
         del transformer

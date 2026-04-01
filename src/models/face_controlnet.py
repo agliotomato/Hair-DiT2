@@ -29,6 +29,7 @@ import copy
 import torch
 import torch.nn as nn
 from diffusers import SD3ControlNetModel, SD3Transformer2DModel
+from diffusers.models.normalization import AdaLayerNormZero
 
 
 # Index range of source SD3.5 transformer blocks to copy into FaceControlNet
@@ -80,9 +81,18 @@ class FaceControlNet(nn.Module):
         ])
 
         # SD3.5 block 23 has context_pre_only=True which breaks the 2-tuple return
-        # in SD3ControlNetModel.forward. Set all copied blocks to False for safety.
+        # in SD3ControlNetModel.forward. Setting it to False requires replacing
+        # norm1_context (AdaLayerNormContinuous) with AdaLayerNormZero to match
+        # the expected forward call signature.
         for blk in self.controlnet.transformer_blocks:
-            blk.context_pre_only = False
+            if blk.context_pre_only:
+                # inner_dim: norm1 is AdaLayerNormZero, linear maps time_emb → 6*inner_dim
+                inner_dim = blk.norm1.linear.weight.shape[0] // 6
+                blk.norm1_context = AdaLayerNormZero(inner_dim, bias=True).to(
+                    dtype=blk.norm1.linear.weight.dtype,
+                    device=blk.norm1.linear.weight.device,
+                )
+                blk.context_pre_only = False
 
         del transformer
         torch.cuda.empty_cache()

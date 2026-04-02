@@ -3,7 +3,7 @@ base: configs/base.yaml
 training:
   phase: finetune
   dataset: braid
-  resume_from: checkpoints/phase1_unbraid/epoch_40.pth
+  resume_from: checkpoints/phase1_unbraid/best.pth
 
   epochs: 50
   batch_size: 8             # H100 80GB 기준

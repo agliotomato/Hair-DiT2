@@ -6,7 +6,8 @@ training:
   resume_from: checkpoints/phase1_unbraid/best.pth
 
   epochs: 50
-  batch_size: 8             # H100 80GB 기준
+  batch_size: 4
+  gradient_accumulation_steps: 2  # effective batch size 8 유지
   learning_rate: 2.0e-5
   warmup_steps: 100
 

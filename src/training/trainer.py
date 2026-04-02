@@ -196,13 +196,19 @@ class Trainer:
             self.ema_hair.load_state_dict(ckpt["ema_hair"])
         if "ema_face" in ckpt:
             self.ema_face.load_state_dict(ckpt["ema_face"])
-        if "optimizer" in ckpt:
-            self.optimizer.load_state_dict(ckpt["optimizer"])
-        if "lr_scheduler" in ckpt:
-            self.lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
-        self.global_step = ckpt.get("global_step", 0)
-        self.start_epoch = ckpt.get("epoch", 0)
-        self.best_val_loss = ckpt.get("best_val_loss", float("inf"))
+
+        ckpt_phase = ckpt.get("config", {}).get("training", {}).get("phase", self.phase)
+        if ckpt_phase == self.phase:
+            # 같은 phase: epoch/step/optimizer 모두 복원 (resume)
+            if "optimizer" in ckpt:
+                self.optimizer.load_state_dict(ckpt["optimizer"])
+            if "lr_scheduler" in ckpt:
+                self.lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
+            self.global_step = ckpt.get("global_step", 0)
+            self.start_epoch = ckpt.get("epoch", 0)
+            self.best_val_loss = ckpt.get("best_val_loss", float("inf"))
+        # 다른 phase (e.g. phase1 → phase2): 모델 가중치만 로드, epoch/step/optimizer 리셋
+
         self.accelerator.print(
             f"[Resume] Loaded {path} — epoch {self.start_epoch}, step {self.global_step}, best_val {self.best_val_loss:.4f}"
         )

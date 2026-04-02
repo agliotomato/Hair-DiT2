@@ -46,7 +46,7 @@ class EMAModel:
         for name, param in model.named_parameters():
             if param.requires_grad and name in self.shadow:
                 self.shadow[name] = (
-                    self.decay * self.shadow[name] + (1.0 - self.decay) * param.data
+                    self.decay * self.shadow[name].to(param.data.device) + (1.0 - self.decay) * param.data
                 )
 
     def apply_to(self, model: nn.Module):

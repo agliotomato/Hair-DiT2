@@ -110,6 +110,7 @@ def run_inpaint_sampling(
 
     # Initialize: face region from GT latent, hair region from noise
     noise = torch.randn(1, 16, 64, 64, device=device, dtype=bf16)
+    matte_down = matte_down.to(dtype=bf16)
     latents = face_latent * (1.0 - matte_down) + noise * matte_down
 
     sketch_bf16 = sketch.to(device=device, dtype=bf16)
